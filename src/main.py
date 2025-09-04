@@ -144,6 +144,7 @@ class BookStoreAIManager:
                     f"{row['sell_price']:,} VNĐ"
                 )
             )
+
     def open_inventory_tab(self):
         for row in self.inventory_tree.get_children():
             self.inventory_tree.delete(row)
@@ -161,6 +162,7 @@ class BookStoreAIManager:
             from tkcalendar import DateEntry
     except ImportError:
         DateEntry = None
+
     def setup_profit_tab(self):
         """Profit Analyzer Tab"""
         self.profit_frame = tk.Frame(self.notebook, bg="#ecf0f1")
@@ -420,11 +422,13 @@ class BookStoreAIManager:
         if not title_or_id:
             messagebox.showwarning("Warning", "Please enter book ID or Title.")
             return
-
         try:
             qty = int(self.quantity_entry.get().strip() or 1)
         except ValueError:
             messagebox.showerror("Error", "Quantity must be a number.")
+            return
+        if qty <= 0:
+            messagebox.showerror("Error", "Quantity must be greater than 0.")
             return
 
         import sqlite3, os
@@ -434,9 +438,15 @@ class BookStoreAIManager:
 
         # Tìm sách theo ID hoặc Title
         if title_or_id.isdigit():
-            cursor.execute("SELECT id, title, buy_price, sell_price FROM books WHERE id = ?", (title_or_id,))
+            cursor.execute(
+                "SELECT id, title, buy_price, sell_price, stock FROM books WHERE id = ?",
+                (title_or_id,),
+            )
         else:
-            cursor.execute("SELECT id, title, buy_price, sell_price FROM books WHERE LOWER(title) = LOWER(?)", (title_or_id,))
+            cursor.execute(
+                "SELECT id, title, buy_price, sell_price, stock FROM books WHERE LOWER(title) = LOWER(?)",
+                (title_or_id,),
+            )
 
         book = cursor.fetchone()
         conn.close()
@@ -445,7 +455,24 @@ class BookStoreAIManager:
             messagebox.showerror("Error", "Book not found in inventory.")
             return
 
-        book_id, title, buy_price, sell_price = book
+        book_id, title, buy_price, sell_price, stock = book
+
+        # Số lượng đã có sẵn trong giỏ với cùng book_id
+        reserved = sum(it["quantity"] for it in self.current_order if it["book_id"] == book_id)
+        available = (stock or 0) - reserved
+
+        # Kiểm tra tồn kho
+        if available <= 0:
+            messagebox.showwarning("Insufficient Stock", f"'{title}' is out of stock.")
+            return
+
+        if qty > available:
+            messagebox.showwarning(
+                "Insufficient Stock",
+                f"Only {available} copies of '{title}' left (in stock minus items already in the cart)."
+            )
+            return
+
         total = sell_price * qty
 
         # Lưu vào giỏ hàng tạm
@@ -719,65 +746,145 @@ class BookStoreAIManager:
 
     def open_import_stock_popup(self):
         popup = tk.Toplevel(self.root)
-        popup.title("Nhập kho")
-        popup.geometry("400x400")
+        popup.title("Add New Book to Stock")
+        popup.geometry("400x500")
 
-        tk.Label(popup, text="Tiêu đề:").pack()
+        # Input fields
+        tk.Label(popup, text="Title:").pack()
         title_entry = tk.Entry(popup)
         title_entry.pack()
 
-        tk.Label(popup, text="Tác giả:").pack()
+        tk.Label(popup, text="Author:").pack()
         author_entry = tk.Entry(popup)
         author_entry.pack()
 
-        tk.Label(popup, text="Thể loại:").pack()
+        tk.Label(popup, text="Genre:").pack()
         genre_entry = tk.Entry(popup)
         genre_entry.pack()
 
-        tk.Label(popup, text="Mô tả:").pack()
+        tk.Label(popup, text="Description:").pack()
         desc_entry = tk.Entry(popup)
         desc_entry.pack()
 
-        tk.Label(popup, text="Giá tiền nhập:").pack()
+        tk.Label(popup, text="Purchase Price (VND):").pack()
         buy_price_entry = tk.Entry(popup)
         buy_price_entry.pack()
 
-        tk.Label(popup, text="Giá bán:").pack()
+        tk.Label(popup, text="Selling Price (VND):").pack()
         sell_price_entry = tk.Entry(popup)
         sell_price_entry.pack()
 
-        tk.Label(popup, text="Số lượng:").pack()
+        tk.Label(popup, text="Quantity:").pack()
         quantity_entry = tk.Entry(popup)
         quantity_entry.pack()
 
-        tk.Label(popup, text="Vị trí kệ:").pack()
+        tk.Label(popup, text="Shelf Position:").pack()
         shelf_entry = tk.Entry(popup)
         shelf_entry.pack()
 
-        def save_import():
+        # Save & Cancel buttons
+        def save_book():
             try:
-                title = title_entry.get()
-                author = author_entry.get()
-                genre = genre_entry.get()
-                desc = desc_entry.get()
-                buy_price = int(buy_price_entry.get())
-                sell_price = int(sell_price_entry.get())
-                quantity = int(quantity_entry.get())
-                shelf = shelf_entry.get()
-
-                self.db.add_book(title, author, genre, desc, shelf, buy_price, sell_price, quantity)
-                self.inventory_df = self.db.get_books()
-                current_tab = self.notebook.tab(self.notebook.select(), "text")
-                if current_tab == "Kiểm tra kho":
-                    self.open_inventory_tab()
-                messagebox.showinfo("Thành công", f"Đã nhập {quantity} bản {title} vào kho.")
+                self.db.add_book(
+                    title_entry.get(),
+                    author_entry.get(),
+                    genre_entry.get(),
+                    desc_entry.get(),
+                    shelf_entry.get(),
+                    int(buy_price_entry.get()),
+                    int(sell_price_entry.get()),
+                    int(quantity_entry.get())
+                )
+                messagebox.showinfo("Success", "Book added successfully!")
                 popup.destroy()
-            except ValueError as e:
-                logging.error(f"Error in save_import: {str(e)}")
-                messagebox.showerror("Lỗi", "Giá tiền và số lượng phải là số.")
+                self.open_inventory_tab()  # refresh inventory
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to add book: {e}")
 
-        save_button = tk.Button(popup, text="Lưu nhập kho", command=save_import)
-        save_button.pack(pady=10)
+        btn_frame = tk.Frame(popup)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="✅ Save", command=save_book, bg="#27ae60", fg="white").pack(side="left", padx=5)
+        tk.Button(btn_frame, text="❌ Cancel", command=popup.destroy, bg="#e74c3c", fg="white").pack(side="left", padx=5)
+
+    def add_product_to_order(self):
+        title_or_id = self.product_entry.get().strip()
+        if not title_or_id:
+            messagebox.showwarning("Warning", "Please enter book ID or Title.")
+            return
+
+        # Get quantity, must be a positive integer
+        try:
+            qty = int(self.quantity_entry.get().strip() or 1)
+        except ValueError:
+            messagebox.showerror("Error", "Quantity must be a number.")
+            return
+        if qty <= 0:
+            messagebox.showerror("Error", "Quantity must be greater than 0.")
+            return
+
+        import sqlite3, os
+        db_path = os.path.join(os.path.dirname(__file__), "bookstore.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        # Find book by ID or Title (case-insensitive)
+        if title_or_id.isdigit():
+            cursor.execute(
+                "SELECT id, title, buy_price, sell_price, stock FROM books WHERE id = ?",
+                (title_or_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, title, buy_price, sell_price, stock FROM books WHERE LOWER(title) = LOWER(?)",
+                (title_or_id,),
+            )
+
+        book = cursor.fetchone()
+        conn.close()
+
+        if not book:
+            messagebox.showerror("Error", "Book not found in inventory.")
+            return
+
+        book_id, title, buy_price, sell_price, stock = book
+
+        # Check reserved quantity already in the cart for this book_id
+        reserved = sum(it["quantity"] for it in self.current_order if it["book_id"] == book_id)
+        available = (stock or 0) - reserved
+
+        # Validate stock
+        if available <= 0:
+            messagebox.showwarning("Out of Stock", f"'{title}' is out of stock.")
+            return
+
+        if qty > available:
+            messagebox.showwarning(
+                "Insufficient Stock",
+                f"Only {available} copies of '{title}' left (after considering items already in the cart)."
+            )
+            return
+
+        total = sell_price * qty
+
+        # Add to temporary cart
+        self.current_order.append({
+            "book_id": book_id,
+            "title": title,
+            "quantity": qty,
+            "unit_price": sell_price,
+            "total": total
+        })
+
+        # Show in Staff order table
+        self.order_tree_staff.insert("", "end", values=(title, qty, sell_price, total))
+
+        # Update total amount
+        total_amount = sum(item["total"] for item in self.current_order)
+        self.total_order_label_staff.config(text=f"Total: {total_amount:,} VND")
+
+        # Sync cart with Customer tab
+        self.sync_customer_cart()
 
     def delete_book(self):
         selected = self.inventory_tree.selection()
@@ -787,19 +894,19 @@ class BookStoreAIManager:
             self.db.delete_book(book_id)
             self.inventory_df = self.db.get_books()
             self.open_inventory_tab()
-            messagebox.showinfo("Thành công", "Sách đã được xóa.")
+            messagebox.showinfo("Success", "The book has been deleted..")
         else:
-            messagebox.showerror("Lỗi", "Vui lòng chọn sách từ bảng.")
+            messagebox.showerror("Error", "Please select a book.")
 
     def optimize_inventory(self):
         self.revenue_df = self.db.get_revenue()
-        result = "📊 Đề xuất tối ưu hóa kho:\n\n"
+        result = "📊 Inventory Optimization Suggestions:\n\n"
         inventory = self.db.get_books()
 
-        unsold_books = []  # lưu danh sách sách không bán được
+        unsold_books = []  # list of books that have not been sold
 
         if not self.revenue_df.empty:
-            # Tính doanh số bán theo từng sách
+            # Calculate sales per book
             sales = self.revenue_df.groupby("book_id").agg(
                 {"quantity": "sum", "total_amount": "sum", "profit": "sum"}
             ).reset_index()
@@ -812,58 +919,53 @@ class BookStoreAIManager:
                 buy_price = row["buy_price"]
                 sell_price = row["sell_price"]
 
-                # Lợi nhuận biên %
+                # Profit margin %
                 margin = (sell_price - buy_price) / sell_price * 100 if sell_price > 0 else 0
 
-                # Giả sử dữ liệu bán trong 30 ngày gần nhất
+                # Assume sales data for the last 30 days
                 daily_sales = sold / 30 if sold > 0 else 0
                 days_to_sell = stock / daily_sales if daily_sales > 0 else float("inf")
 
                 if sold == 0:
                     unsold_books.append(title)
-                    result += f"❌ {title}: Không bán được → đề xuất giảm giá xuống {int(sell_price*0.7)} VNĐ hoặc ngừng nhập.\n"
+                    result += f"❌ {title}: No sales → suggest discount to {int(sell_price*0.7)} VND or stop importing.\n"
                     continue
 
                 if days_to_sell > 90:
                     new_price = int(sell_price * 0.85)
-                    result += f"⚠️ {title}: Bán chậm (tồn kho {days_to_sell:.0f} ngày) → giảm giá xuống {new_price} VNĐ.\n"
+                    result += f"⚠️ {title}: Slow selling (stock lasts {days_to_sell:.0f} days) → reduce price to {new_price} VND.\n"
 
                 elif 30 <= days_to_sell <= 90:
-                    result += f"ℹ️ {title}: Bán trung bình (tồn kho {days_to_sell:.0f} ngày) → giữ nguyên giá {sell_price} VNĐ.\n"
+                    result += f"ℹ️ {title}: Average selling (stock lasts {days_to_sell:.0f} days) → keep current price {sell_price} VND.\n"
 
                 elif days_to_sell < 30:
-                    suggest_import = int(daily_sales * 60)  # nhập thêm khoảng 2 tháng nhu cầu
+                    suggest_import = int(daily_sales * 60)  # import for ~2 months demand
                     total_cost = suggest_import * buy_price
-                    result += f"🔥 {title}: Bán nhanh (có thể hết trong {days_to_sell:.0f} ngày) → đề xuất nhập thêm {suggest_import} bản (~{total_cost} VNĐ chi phí nhập).\n"
+                    result += f"🔥 {title}: Fast selling (may run out in {days_to_sell:.0f} days) → suggest importing {suggest_import} copies (~{total_cost} VND cost).\n"
 
-                # Thêm nhận xét về lợi nhuận
+                # Profit margin comments
                 if margin < 10:
-                    result += f"   💡 Lợi nhuận thấp ({margin:.1f}%) → cân nhắc tăng giá hoặc bỏ mặt hàng này.\n"
+                    result += f"   💡 Low profit margin ({margin:.1f}%) → consider raising price or discontinuing.\n"
                 elif margin > 40:
-                    result += f"   💰 Lợi nhuận cao ({margin:.1f}%) → nên quảng bá thêm.\n"
+                    result += f"   💰 High profit margin ({margin:.1f}%) → should promote more.\n"
 
         else:
-            result += "Không có dữ liệu bán hàng để tối ưu hóa."
+            result += "No sales data available for optimization."
 
-        # Nếu có sách không bán được → liệt kê riêng
+        # List unsold books
         if unsold_books:
-            result += "\n📕 Danh sách sách không bán được:\n"
+            result += "\n📕 Unsold books list:\n"
             for t in unsold_books:
                 result += f" - {t}\n"
 
-        # Hiển thị popup
+        # Show popup
         self.optimization_history.append(result)
         popup = tk.Toplevel(self.root)
-        popup.title("Đề xuất Tối ưu hóa")
+        popup.title("Inventory Optimization Suggestions")
         popup.geometry("600x400")
-        tk.Label(popup, text=result, justify="left", anchor="w", font=("Arial", 10)).pack(pady=10, fill="both", expand=True)
-
-    def show_optimization_history(self):
-        history_text = "Lịch sử đề xuất tối ưu hóa:\n" + "\n".join(self.optimization_history) if self.optimization_history else "Chưa có lịch sử."
-        popup = tk.Toplevel(self.root)
-        popup.title("Lịch sử Tối ưu hóa")
-        popup.geometry("400x300")
-        tk.Label(popup, text=history_text, justify="left", font=("Arial", 10)).pack(pady=10)
+        tk.Label(popup, text=result, justify="left", anchor="w", font=("Arial", 10)).pack(
+            pady=10, fill="both", expand=True
+        )
 
     def setup_history_tab(self):
         self.history_frame = tk.Frame(self.notebook, bg="#f4f6f9")
@@ -1057,7 +1159,7 @@ class BookStoreAIManager:
         conn.close()
 
         if df.empty:
-            messagebox.showinfo("Export", "Không có dữ liệu để xuất")
+            messagebox.showinfo("Export", "No data to export.")
             return
 
         # Chọn nơi lưu file
@@ -1070,7 +1172,7 @@ class BookStoreAIManager:
 
         # Xuất ra Excel
         df.to_excel(file_path, index=False)
-        messagebox.showinfo("Export", f"Xuất dữ liệu thành công!\n{file_path}")
+        messagebox.showinfo("Export", f"Data export successful!\n{file_path}")
 
 if __name__ == "__main__":
     root = tk.Tk()
